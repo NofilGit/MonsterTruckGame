@@ -1,17 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 
 /* ---------- Constants ---------- */
-const GRAVITY = 0.34; // lower gravity = longer air time
-const JUMP_POWER = 12.5; // higher jump
-const MAX_SPEED = 3.6;
-const REVERSE_SPEED = 2.2;
+const GRAVITY = 0.5; // natural gravity
+const JUMP_POWER = 13; // higher jump
+const MAX_SPEED = 5.2; // faster truck
+const REVERSE_SPEED = 2.6;
 const PX_PER_METER = 10;
-const COURSE_END = 20000; // 2000 m course
-const CHECKPOINTS = [4000, 8000, 12000, 16000]; // every 400 m
-const COIN_COUNT = 52; // coins on the course (at least 50)
+const COURSE_END = 30000; // 3000 m course
+const CHECKPOINTS = [6000, 12000, 18000, 24000]; // every 600 m
+const COIN_COUNT = 90; // coins on the course
 const COIN_PASS = 35; // fewer coins than this at the finish = not enough coins
 const LIVES_START = 3;
-const COIN_X = (i) => 200 + i * 380;
+const ROUNDS = 10; // rounds per map
+const COIN_X = (i) => 200 + i * 330;
 const FUEL_PER_UNIT = 100 / 4000; // 100% fuel = 400 m (4000 world units)
 const FUEL_STATION_GAP = 3000; // a fuel station every 300 m
 const FLIP_SPEED = 0.11; // radians per frame while FLIP is held in the air
@@ -20,6 +21,24 @@ const FLIP_LIMIT = 0.42; // holding a wheelie past this angle flips the truck
 const HILL_EVERY = 3000; // a steep hill every 300 m (3000 world units)
 const HILL_L = 600; // hill length
 const HILL_H = 170; // hill height
+
+// 2D ramp catalog. Heights are added to the road profile; positive values rise.
+const RAMP_MODELS = [
+  { id: "classic", name: "Classic", points: [[0,0],[0.18,2],[0.42,12],[0.68,34],[0.88,54],[1,0]] },
+  { id: "steep", name: "Steep Jump", points: [[0,0],[0.35,0],[0.58,18],[0.78,62],[0.94,100],[1,0]] },
+  { id: "long", name: "Long Ramp", points: [[0,0],[0.15,3],[0.45,18],[0.72,36],[0.92,52],[1,0]] },
+  { id: "double", name: "Double Ramp", points: [[0,0],[0.18,32],[0.34,48],[0.48,8],[0.64,8],[0.82,48],[0.94,62],[1,0]] },
+  { id: "launch", name: "Launch Ramp", points: [[0,0],[0.25,-12],[0.48,-18],[0.7,18],[0.88,78],[0.96,105],[1,0]] },
+  { id: "suspended", name: "Suspended", points: [[0,0],[0.18,24],[0.42,34],[0.68,42],[0.88,58],[1,0]] },
+  { id: "bridge", name: "Bridge Jump", points: [[0,0],[0.2,22],[0.8,22],[1,0]] },
+  { id: "descending", name: "Descending", points: [[0,0],[0.12,78],[0.3,72],[0.55,48],[0.78,20],[1,0]] },
+  { id: "loop", name: "Loop Arc", points: [[0,0],[0.18,35],[0.35,82],[0.5,112],[0.65,82],[0.82,35],[1,0]] },
+  { id: "bumpy", name: "Bumpy", points: [[0,0],[0.12,24],[0.24,8],[0.38,36],[0.52,12],[0.68,42],[0.84,18],[1,0]] },
+  { id: "mega", name: "Mega Jump", points: [[0,0],[0.22,4],[0.48,30],[0.72,78],[0.92,132],[1,0]] },
+  { id: "platform", name: "Landing Platform", points: [[0,0],[0.16,38],[0.84,38],[1,0]] },
+];
+const rampModelFor = (seed) => RAMP_MODELS[Math.floor(rnd(seed) * RAMP_MODELS.length)];
+
 
 // Truck geometry (local units, origin = bottom of the wheels when resting)
 const SVG_S = 26 / 125; // game units per artwork unit
@@ -34,7 +53,7 @@ const BODY_POINTS = [-88, -40, 0, 80];
 
 // Suspension (visual spring for the tyres)
 const SUSP_K = 0.22;
-const SUSP_D = 0.55;
+const SUSP_D = 0.7;
 const SUSP_EXT = 8;
 const SUSP_COMP = 10;
 
@@ -46,7 +65,7 @@ const BLOCK_AMP = { mountain: 1, flat: 0.08, ramp: 0.08, pond: 0.4, mud: 0.25, b
 const MAPS = [
   {
     name: "Snow Mountain ❄️",
-    desc: "Barfeeli sadak, grip kam. Dhyan se chalo!",
+    desc: "Icy road, low grip. Drive carefully!",
     grip: 0.6,
     decor: "snow",
     skyTop: "#cfe8ff",
@@ -60,7 +79,7 @@ const MAPS = [
   },
   {
     name: "Sea Side 🌊",
-    desc: "Reti par chalo, grip achha hai.",
+    desc: "Drive on the sand, good grip.",
     grip: 0.85,
     decor: "sea",
     skyTop: "#4fc3f7",
@@ -74,7 +93,7 @@ const MAPS = [
   },
   {
     name: "Jungle 🌴",
-    desc: "Ghana jungle, mazboot grip.",
+    desc: "Dense jungle, solid grip.",
     grip: 1.0,
     decor: "jungle",
     skyTop: "#7fd38a",
@@ -85,6 +104,48 @@ const MAPS = [
     gMid: "#6d4c2b",
     gBot: "#3a2a18",
     rock: "#6b6b5a",
+  },
+  {
+    name: "Desert 🏜️",
+    desc: "Hot desert, good grip, rolling dunes.",
+    grip: 0.95,
+    decor: "dunes",
+    skyTop: "#ffb347",
+    skyBot: "#ffe9b0",
+    far1: "#d9a066",
+    far2: "#b97a45",
+    gTop: "#f2d08a",
+    gMid: "#d9b06a",
+    gBot: "#9c7040",
+    rock: "#8a6d4f",
+  },
+  {
+    name: "Night City 🌙",
+    desc: "Night drive, grip can be low.",
+    grip: 0.8,
+    decor: "stars",
+    skyTop: "#0b1030",
+    skyBot: "#2b2f5c",
+    far1: "#262b52",
+    far2: "#1a1d3a",
+    gTop: "#3a3f66",
+    gMid: "#2a2d4e",
+    gBot: "#161829",
+    rock: "#4a4d6e",
+  },
+  {
+    name: "Volcano 🌋",
+    desc: "Drive near the lava, it is very hot!",
+    grip: 0.9,
+    decor: "embers",
+    skyTop: "#3a0d05",
+    skyBot: "#c2410c",
+    far1: "#5a1a0b",
+    far2: "#3b1006",
+    gTop: "#4a2a20",
+    gMid: "#2e1a14",
+    gBot: "#150b08",
+    rock: "#5b4638",
   },
 ];
 
@@ -123,13 +184,80 @@ const THEMES = [
     body: "#ff9d00",
     light: "#ffdf24",
   },
+  {
+    name: "Lava Kong",
+    primary: "#e53935",
+    secondary: "#ffb300",
+    dark: "#2a0606",
+    rim: "#ff7043",
+    flame: "#ffea00",
+    accent: "#ffffff",
+    body: "#e53935",
+    light: "#ffb300",
+  },
+  {
+    name: "Ice Viper",
+    primary: "#e3f2fd",
+    secondary: "#29b6f6",
+    dark: "#0d2233",
+    rim: "#4fc3f7",
+    flame: "#80deea",
+    accent: "#0d2233",
+    body: "#e3f2fd",
+    light: "#29b6f6",
+  },
+  {
+    name: "Shadow Rex",
+    primary: "#37474f",
+    secondary: "#b388ff",
+    dark: "#0b0b0f",
+    rim: "#7e57c2",
+    flame: "#d500f9",
+    accent: "#ffffff",
+    body: "#37474f",
+    light: "#b388ff",
+  },
 ];
 
 /* ---------- Helpers ---------- */
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
+let worldSeed = 0; // changes the road for each round
+let courseRound = 1; // current round (sets how many ramps and how hard they are)
+
+// Ramps for the current round: round 1 has 2 ramps, round 2 has 3, and so on.
+// Later rounds mix in harder ramp types.
+const EASY_RAMPS = ["classic", "long", "bridge", "platform", "bumpy"];
+const MID_RAMPS = ["suspended", "double", "descending", "steep"];
+const HARD_RAMPS = ["launch", "loop", "mega", "steep"];
+const nearRamp = (x, margin) => courseRamps().some((r) => Math.abs(r.cx - x) < margin);
+const rampWeight = (x) => {
+  let w = 0;
+  courseRamps().forEach((r) => {
+    const d = Math.abs(x - r.cx);
+    if (d < 420) w = Math.max(w, 0.5 + 0.5 * Math.cos((Math.PI * d) / 420));
+  });
+  return w;
+};
+
+const courseRamps = () => {
+  const count = courseRound + 1;
+  const hardShare = courseRound >= 7 ? 0.4 : courseRound >= 4 ? 0.2 : 0;
+  const midShare = courseRound >= 3 ? 0.5 : 0;
+  const list = [];
+  for (let i = 0; i < count; i++) {
+    const slot = (COURSE_END - 2000) / count;
+    const cx = 1000 + (i + 0.5) * slot + (rnd(i * 13 + worldSeed) - 0.5) * Math.min(300, slot * 0.4);
+    const u = rnd(i * 7 + 3 + worldSeed * 5);
+    const pool = u < hardShare ? HARD_RAMPS : u < hardShare + midShare ? MID_RAMPS : EASY_RAMPS;
+    const id = pool[Math.floor(rnd(i * 11 + 1 + worldSeed * 3) * pool.length)];
+    list.push({ cx, id });
+  }
+  return list;
+};
+let truckWorldX = 0; // truck position, used to sag the bridge under its weight
 const rnd = (n) => {
-  const s = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
+  const s = Math.sin((n + worldSeed * 7919) * 12.9898 + 78.233) * 43758.5453;
   return s - Math.floor(s);
 };
 
@@ -165,7 +293,18 @@ const ampAt = (x) => {
   return num / den;
 };
 
-const baseY = (x) => mountainY(x) * ampAt(x) + 3 * Math.sin(x * 0.013);
+// 1 near a fuel station (flat, straight road), 0 elsewhere
+const stationWeight = (x) => {
+  const k = Math.round(x / FUEL_STATION_GAP);
+  if (k < 1) return 0;
+  const d = Math.abs(x - k * FUEL_STATION_GAP);
+  return d < 450 ? 0.5 + 0.5 * Math.cos((Math.PI * d) / 450) : 0;
+};
+
+const baseY = (x) => {
+  const flat = 1 - Math.max(stationWeight(x), rampWeight(x));
+  return (mountainY(x) * ampAt(x) + 3 * Math.sin(x * 0.013)) * flat;
+};
 
 const featuresNear = (x) => {
   const out = [];
@@ -178,15 +317,14 @@ const featuresNear = (x) => {
     if (type === "flat" && rnd(k + 11) > 0.35) {
       out.push({ kind: "car", cx: c + (rnd(k + 31) - 0.5) * 200, hw: 80, h: 18 });
     }
-    if (type === "ramp") out.push({ kind: "launch", cx: c, hw: 260, h: 0 });
     if (type === "pond") out.push({ kind: "pond", cx: c, hw: 170, h: 60 });
     if (type === "mud") out.push({ kind: "mud", cx: c, hw: 240, h: 10 });
     if (type === "bridge") out.push({ kind: "chasm", cx: c, hw: 170, h: 260 });
   }
-  for (let j = Math.floor((x - 800) / HILL_EVERY); j <= Math.floor((x + 800) / HILL_EVERY); j++) {
-    if (j >= 1) out.push({ kind: "hill", cx: j * HILL_EVERY + 1500, hw: HILL_L / 2, h: HILL_H });
-  }
-  return out;
+  courseRamps().forEach((r) => {
+    if (Math.abs(r.cx - x) < 800) out.push({ kind: "launch", cx: r.cx, hw: 260, h: 0, rampType: r.id });
+  });
+  return out.filter((f) => stationWeight(f.cx) < 0.05 && (f.kind === "launch" || !nearRamp(f.cx, 420))); // obstacles stay off ramps and fuel roads
 };
 
 // Steep hill: climbs to a crest, then drops steeply on the far side (smooth curves)
@@ -198,19 +336,30 @@ const hillProfile = (f, x) => {
   return (f.h * (1 + Math.cos((Math.PI * (u - 0.55)) / 0.45))) / 2;
 };
 
-// Smooth launch ramp: dips down, climbs a gentle kicker, then drops off (no bumps)
-const LAUNCH = { D: 40, K: 50 };
+// Interpolate a selected ramp's profile with smooth easing between control points.
 const launchProfile = (f, x) => {
   const t = (x - (f.cx - f.hw)) / (2 * f.hw);
-  if (t < 0 || t > 1) return 0;
-  const { D, K } = LAUNCH;
-  if (t <= 0.5) return (-D * (1 - Math.cos(2 * Math.PI * t))) / 2;
-  if (t <= 0.9) return -D + (K + D) * Math.sin(((t - 0.5) / 0.4) * (Math.PI / 2));
-  return K * (1 - (t - 0.9) / 0.1);
+  if (t <= 0 || t >= 1) return 0;
+  const model = RAMP_MODELS.find((m) => m.id === f.rampType) || RAMP_MODELS[0];
+  const pts = model.points;
+  let i = 0;
+  while (i < pts.length - 2 && t > pts[i + 1][0]) i++;
+  const [t0, y0] = pts[i];
+  const [t1, y1] = pts[i + 1];
+  const u = clamp((t - t0) / (t1 - t0), 0, 1);
+  const eased = u * u * (3 - 2 * u);
+  return y0 + (y1 - y0) * eased;
 };
-// True on the kicker/lip part of a launch ramp, where the truck can fly off
+
+// Only the final rising section releases the truck from the ramp.
 const onLaunchLip = (x) =>
-  featuresNear(x).some((f) => f.kind === "launch" && x > f.cx && x < f.cx + f.hw);
+  featuresNear(x).some((f) => {
+    if (f.kind !== "launch") return false;
+    const t = (x - (f.cx - f.hw)) / (2 * f.hw);
+    const rising = launchProfile(f, Math.min(f.cx + f.hw, x + 8)) >
+      launchProfile(f, Math.max(f.cx - f.hw, x - 8));
+    return t > 0.78 && t < 0.99 && rising;
+  });
 
 const groundY = (x) => {
   let y = baseY(x);
@@ -285,7 +434,57 @@ const initialState = () => ({
   lives: LIVES_START,
   checkpoint: 0, // last checkpoint reached (world x)
   coinSet: {}, // coins collected so far
+  toolsGot: {}, // repair and boost tools collected
+  boostLeft: 0, // boost distance left (world units, 1000 = 100 m)
+  blastDist: 0, // distance driven with boost + nitro together
+  debris: [], // tyres that came off in an explosion
 });
+
+// Puts the truck back on the road at its last checkpoint with fresh fuel, nitro and heat
+function respawnTruck(g) {
+  const cp = g.checkpoint;
+  g.x = cp;
+  g.alt = 0;
+  g.vx = 0;
+  g.vy = 0;
+  g.wheelie = 0;
+  g.wheelieRaw = 0;
+  g.flip = 0;
+  g.lean = 0;
+  g.flipLift = 0;
+  g.heat = 0;
+  g.fuel = 100;
+  g.nitro = 100;
+  g.phase = "none";
+  g.phaseT = 0;
+  g.impact = 0;
+  g.status = "";
+  g.susp = WHEEL_X.map(() => 0);
+  g.suspV = WHEEL_X.map(() => 0);
+  g.flipDir = 0;
+  g.debris = [];
+  g.boostLeft = 0;
+  g.blastDist = 0;
+  g.stuntMsg = "▶ Continue from checkpoint";
+  g.stuntTimer = 90;
+}
+
+// How far the truck must be raised so none of its body goes under the road while flipping
+function flipLiftFor(g, tilt, k) {
+  const px = WHEEL_X[0] * k;
+  const a = -g.wheelie;
+  const rot = (x, y, ang) => [x * Math.cos(ang) - y * Math.sin(ang), x * Math.sin(ang) + y * Math.cos(ang)];
+  const pts = [];
+  [-110, 90].forEach((x) => [-2, -60, -120, -190].forEach((y) => pts.push([x * k, y * k])));
+  WHEEL_X.forEach((wx) => pts.push([wx * k, 0]));
+  let maxY = 0;
+  pts.forEach(([x, y]) => {
+    const [qx, qy] = rot(x - px, y, a);
+    const [rx, ry] = rot(qx + px, qy, tilt);
+    if (ry > maxY) maxY = ry;
+  });
+  return maxY;
+}
 
 /* ---------- Drawing: tyres ---------- */
 function drawWheel(ctx, wx, bottomY, wheelAngle, s) {
@@ -1618,6 +1817,40 @@ const toggleSegStyle = (active) => ({
   transition: "background 0.25s ease, color 0.25s ease",
 });
 
+// Carousel arrow button
+const arrowBtnStyle = (disabled) => ({
+  width: 44,
+  height: 44,
+  borderRadius: 22,
+  border: "2px solid #fff",
+  fontSize: 18,
+  fontWeight: 900,
+  color: "#fff",
+  background: "linear-gradient(135deg, #ffb300, #e65100)",
+  opacity: disabled ? 0.35 : 1,
+  cursor: disabled ? "default" : "pointer",
+});
+
+// Small live preview of a truck design (uses the same artwork as the game)
+function TruckPreview({ design, width, height }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const c = ref.current;
+    const dpr = window.devicePixelRatio || 1;
+    c.width = width * dpr;
+    c.height = height * dpr;
+    const ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.save();
+    ctx.translate(width * 0.5, height - 6);
+    ctx.scale(width / 330, width / 330);
+    drawTruckDesign(ctx, { susp: [0, 0], suspV: [0, 0], wheel: 0, impact: 0 }, design);
+    ctx.restore();
+  }, [design, width, height]);
+  return <canvas ref={ref} style={{ width, height, display: "block" }} />;
+}
+
 /* ---------- Shared button look for the top bar ---------- */
 const topBtnStyle = {
   width: 130,
@@ -1675,35 +1908,60 @@ const POPUP_CSS = `
 `;
 
 // Rows shown in the control guide popup
+// Icons shown on small screens instead of the control names
+const GUIDE_ICONS = {
+  Move: "◀ ▶",
+  Jump: "⬆",
+  Wheelie: "🌀",
+  Flip: "🔄",
+  Nitro: "🚀",
+  Brake: "◀",
+  Hill: "⛰️",
+  Coins: "$",
+  Lives: "❤️",
+  "Engine heat": "🔥",
+  Fuel: "⛽",
+};
+
 const GUIDE = [
-  { key: "◀ ▶", name: "Move", desc: "Truck aage ya peeche chalta hai. Keyboard: ← → ya A D" },
-  { key: "JUMP", name: "Jump", desc: "Uchhlo, aur ramp ke kinare par hawa mein jao. Keyboard: Space / W" },
-  { key: "🌀 WHEELIE", name: "Wheelie", desc: "Zameen par agla hissa uthao. Keyboard: G" },
-  { key: "🔄 FLIP", name: "Flip", desc: "Hawa mein truck ko ghumao, landing par stunt score milta hai. Keyboard: F" },
+  { key: "◀ ▶", name: "Move", keys: "← → / A D", desc: "Drive forward or reverse. Keyboard: ← → or A D" },
+  { key: "JUMP", name: "Jump", keys: "Space / W / ↑", desc: "Jump, and fly off the ramp lips. Keyboard: Space / W" },
+  { key: "🌀 WHEELIE", name: "Wheelie", keys: "G", desc: "Lift the front on the ground. Keyboard: G" },
+  { key: "🔄 FLIP", name: "Flip", keys: "F", desc: "Flip the truck in the air. Land it to score a stunt. Keyboard: F" },
   {
     key: "🚀 NITRO",
     name: "Nitro",
-    desc: "Aage chalte hue ise dabao: speed bohot tez hoti hai aur thori wheelie bhi lagti hai. Bar khatam ho to ruk jata hai, chhodne par dobara bharta hai. Keyboard: N",
+    keys: "N",
+    desc: "Hold while driving forward for a big speed boost, with a small wheelie. The bar empties and refills when released. Keyboard: N",
   },
   {
     key: "◀ BRAKE",
     name: "Brake",
-    desc: "Tez chal rahe ho to ◀ dabao: truck skid karta hai aur aage jhukta hai (G-force)",
+    keys: "← / A while fast",
+    desc: "Hold ◀ while driving fast: the truck skids and dips forward (G-force)",
   },
   {
-    key: "⛰️ HILL",
+    key: "🚀 RAMP",
     name: "Hill",
-    desc: "Har 300 m par bohot unchi pahaadi. Nitro ke bina nahi chadh sakte. Chadhne ke baad agey ki zameen neechi hoti hai",
+    desc: "Different stunt ramps appear along the course. Build speed, hit the striped kicker and fly for coins and flips",
   },
-  { key: "🪙 COINS", name: "Coins", desc: "2000 m course mein 50 coins hain. Kam az kam 35 collect karo, warna finish nahi hoga" },
-  { key: "❤️ LIVES", name: "Lives", desc: "3 lives. Flip, fuel khatam ya engine aag par life jati hai aur aakhri checkpoint se continue hota hai" },
-  { key: "⏸ PAUSE", name: "Pause", desc: "Game rok kar volume aur truck ka rang badlo. Keyboard: P" },
-  { key: "↻ RESTART", name: "Restart", desc: "Game dobara shuru karo" },
-  { key: "🔥 HEAT", name: "Engine heat", desc: "Chalne aur stunts se garam hota hai. 100% par aag lag jati hai" },
-  { key: "⛽ FUEL", name: "Fuel", desc: "100% fuel 400 m chalta hai. Har 300 m par fuel station se refill karo" },
+  { key: "🪙 COINS", name: "Coins", desc: "The 3000 m course has 90 coins. Collect at least 35 or you cannot finish" },
+  { key: "❤️ LIVES", name: "Lives", desc: "3 lives. A flip, running out of fuel or an engine fire costs a life. You continue from the last checkpoint" },
+  { key: "🔥 HEAT", name: "Engine heat", desc: "Heats up while driving and doing stunts. At 100% the engine catches fire" },
+  { key: "⛽ FUEL", name: "Fuel", desc: "100% fuel lasts 400 m. Refill at a fuel station every 300 m" },
 ];
 
 export default function MonsterTruckGame() {
+  const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1000);
+  useEffect(() => {
+    const onResize = () => setVw(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const compact = vw < 700; // small screens: smaller controls, fonts and popups
+  const cs = compact ? 0.72 : 1;
+  const panelW = compact ? 290 : 380; // every popup has the same size
+  const panelH = compact ? 340 : 400;
   const canvasRef = useRef(null);
   const game = useRef(initialState());
   const dust = useRef([]);
@@ -1724,6 +1982,9 @@ export default function MonsterTruckGame() {
   const [heat, setHeat] = useState(0);
   const [fuel, setFuel] = useState(100);
   const [best, setBest] = useState(0);
+  const [round, setRound] = useState(1);
+  const [unlocked, setUnlocked] = useState(MAPS.map(() => 1)); // highest unlocked round per map
+  const [wins, setWins] = useState({}); // "mapIndex-round" -> true when won
   const [lives, setLives] = useState(LIVES_START);
   const [coins, setCoins] = useState(0);
   const [nitro, setNitro] = useState(100);
@@ -1736,6 +1997,12 @@ export default function MonsterTruckGame() {
   const [overPhase, setOverPhase] = useState("none");
   useEffect(() => {
     if (overPhase !== "none") setBest((b) => Math.max(b, distance));
+  }, [overPhase]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (overPhase === "finished" && coins >= COIN_PASS) {
+      setWins((w) => ({ ...w, [`${mapIdx}-${round}`]: true }));
+      setUnlocked((u) => u.map((v, i) => (i === mapIdx ? Math.min(ROUNDS, Math.max(v, round + 1)) : v)));
+    }
   }, [overPhase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -1826,6 +2093,7 @@ export default function MonsterTruckGame() {
 
     const update = (dt) => {
       const g = game.current;
+      truckWorldX = g.x;
       const inp = input.current;
       const slope = (surfaceY(g.x + 6) - surfaceY(g.x - 6)) / 12;
       const contact = contactHeight(g.x, slope, g.wheelie);
@@ -1838,7 +2106,9 @@ export default function MonsterTruckGame() {
       // Speed
       let target = 0;
       if (inp.fwd && g.phase === "none" && g.fuel > 0) {
-        target = MAX_SPEED * (inp.nitroHeld && g.nitro > 0 ? 2.2 : 1);
+        const nitroOn = inp.nitroHeld && g.nitro > 0;
+        const boosting = g.boostLeft > 0;
+        target = MAX_SPEED * (boosting ? (nitroOn ? 3.2 : 2.6) : nitroOn ? 2.2 : 1);
       }
       if (inp.back && g.phase === "none" && g.fuel > 0) target = -REVERSE_SPEED;
       if (g.grounded) target *= clamp(1 - slope * 0.45, 0.3, 1.15);
@@ -1863,7 +2133,7 @@ export default function MonsterTruckGame() {
       else g.wheelieRaw = Math.max(0, g.wheelieRaw - 0.03 * dt);
       const nitroLift = inp.nitroHeld && g.grounded && g.nitro > 0 ? 0.12 : 0;
       const wheelieTarget = (g.grounded ? g.wheelieRaw : 0) + nitroLift;
-      g.wheelie += (wheelieTarget - g.wheelie) * Math.min(1, 0.1 * dt);
+      if (g.phase === "none") g.wheelie += (wheelieTarget - g.wheelie) * Math.min(1, 0.1 * dt);
       if (g.wheelie >= FLIP_LIMIT && g.grounded && g.phase === "none") {
         g.phase = "flipping";
         g.phaseT = 0;
@@ -1888,8 +2158,19 @@ export default function MonsterTruckGame() {
         if (prevVy < -3 && g.alt <= contactNow + 3) {
           g.impact = clamp(-prevVy * 0.8, 0, 8);
           WHEEL_X.forEach((_, i) => {
-            g.suspV[i] += clamp(-prevVy * 0.25, 0, 4);
+            g.suspV[i] += clamp(-prevVy * 0.1, 0, 1.5);
           });
+        }
+        // A front flip that lands upside down is a crash (same as the back flip)
+        const remFlip = Math.abs(g.flip) % (Math.PI * 2);
+        if (g.phase === "none" && Math.abs(g.flip) > 0.5 && remFlip > Math.PI * 0.6 && remFlip < Math.PI * 1.4) {
+          const n0 = Math.floor(Math.abs(g.flip) / (Math.PI * 2));
+          const up1 = n0 * Math.PI * 2 + Math.PI;
+          const up2 = up1 + Math.PI * 2;
+          g.flipTarget = Math.abs(Math.abs(g.flip) - up1) <= Math.abs(Math.abs(g.flip) - up2) ? up1 : up2;
+          g.flipDir = 1;
+          g.phase = "flipping";
+          g.phaseT = 0;
         }
         // Landing after a flip: score it, then snap the rotation to the nearest full turn
         if (g.phase === "none" && Math.abs(g.flip) > 0.3) {
@@ -1936,11 +2217,11 @@ export default function MonsterTruckGame() {
         .filter((p) => p.life > 0);
 
       g.status = inWater
-        ? "💧 Pani mein"
+        ? "💧 In water"
         : inMud
-        ? "🟫 Keechar mein"
+        ? "🟫 In mud"
         : zone.bridge
-        ? "🌉 Rope bridge par"
+        ? "🌉 On rope bridge"
         : "";
 
       // Fuel stations: passing one refills the tank to 100%
@@ -1978,19 +2259,32 @@ export default function MonsterTruckGame() {
       }
 
       // Flip: the truck rolls over, then the game is over
-      if (g.phase === "flipping") {
+      if (g.phase === "flipping" && g.flipDir === 1) {
+        // front flip: rotate forward until upside down
+        g.phaseT += dt / 60;
+        const diff = g.flipTarget - g.flip;
+        g.flip += Math.sign(diff) * Math.min(Math.abs(diff), (Math.PI / 120) * dt);
+        if (Math.abs(g.flipTarget - g.flip) < 0.01 || g.phaseT >= 2.2) {
+          g.phase = "flipped";
+          g.phaseT = 0;
+        }
+      } else if (g.phase === "flipping") {
         // roll backwards over the rear wheel until the truck is upside down
         g.phaseT += dt / 60;
-        g.wheelie = Math.min(Math.PI, g.wheelie + 0.05 * dt);
-        if (g.wheelie >= Math.PI - 0.01 || g.phaseT >= 1.4) g.phase = "flipped";
+        g.wheelie = Math.min(Math.PI, g.wheelie + ((Math.PI - FLIP_LIMIT) / 120) * dt); // about 2 seconds
+        if (g.wheelie >= Math.PI - 0.01 || g.phaseT >= 2.2) {
+          g.phase = "flipped";
+          g.phaseT = 0;
+        }
       }
+      if (g.phase === "flipped") g.phaseT += dt / 60; // time the truck lies upside down
       if (g.phase === "flipping" || g.phase === "flipped") {
-        g.flipLift = 125 * clamp(g.wheelie / Math.PI, 0, 1); // lifts the roof onto the road
+        g.flipLift = g.flipDir === 1 ? 125 * clamp((Math.abs(g.flip) % (Math.PI * 2)) / Math.PI, 0, 1) : 125 * clamp(g.wheelie / Math.PI, 0, 1); // lifts the roof onto the road
       }
       if (g.phase === "none" && g.wheelie > FLIP_LIMIT * 0.7 && g.grounded) {
         g.status = "⚠️ Truck unstable!";
       } else if (g.phase === "none" && steepUp) {
-        g.status = "⛰️ Nitro zaroori!";
+        g.status = "⛰️ Nitro needed!";
       }
 
       // Checkpoints every 400 m
@@ -2004,46 +2298,116 @@ export default function MonsterTruckGame() {
 
       // Coins: collect them by driving through, or jumping up to the high ones
       const bodyMid = surfaceY(g.x) + g.alt + 40;
-      const firstCoin = Math.max(0, Math.floor((g.x - 200) / 380) - 1);
+      const firstCoin = Math.max(0, Math.floor((g.x - 200) / 330) - 1);
       for (let i = firstCoin; i <= firstCoin + 3 && i < COIN_COUNT; i++) {
-        if (g.coinSet[i]) continue;
+        if (g.coinSet[i] || nearRamp(COIN_X(i), 300)) continue;
         const cx = COIN_X(i);
         const cy = surfaceY(cx) + (i % 3 === 2 ? 150 : 50);
         if (Math.abs(g.x - cx) < 60 && Math.abs(bodyMid - cy) < 90) g.coinSet[i] = true;
       }
 
-      // Finish line at 2000 m
+      // Finish line at 3000 m
       if (g.phase === "none" && g.x >= COURSE_END) g.phase = "finished";
 
-      // A flip, fuel-out or engine fire costs a life and respawns at the last checkpoint
-      if (g.phase === "flipped" || g.phase === "nofuel" || g.phase === "over") {
+      // A flip (after 2 s upside down), fuel-out or engine fire costs a life.
+      // With lives left, the lives popup shows and the game waits for CONTINUE.
+      if ((g.phase === "flipped" && g.phaseT >= 2) || (g.phase === "blast" && g.phaseT >= 2) || g.phase === "nofuel" || g.phase === "over") {
         if (g.lives > 1) {
           g.lives -= 1;
-          const cp = g.checkpoint;
-          g.x = cp;
-          g.alt = 0;
-          g.vx = 0;
-          g.vy = 0;
-          g.wheelie = 0;
-          g.wheelieRaw = 0;
-          g.flip = 0;
-          g.lean = 0;
-          g.flipLift = 0;
-          g.heat = 0;
-          g.fuel = 100;
-          g.nitro = 100;
-          g.phase = "none";
-          g.phaseT = 0;
-          g.impact = 0;
-          g.status = "";
-          g.susp = WHEEL_X.map(() => 0);
-          g.suspV = WHEEL_X.map(() => 0);
-          g.stuntMsg = `❤️ Life lost! ${cp / 10} m checkpoint se continue`;
-          g.stuntTimer = 150;
+          g.phase = "lostLife";
         } else {
           g.lives = 0;
         }
       }
+
+      // Repair tool (cools the engine) and boost tool (100 m of extra speed) every 500 m
+      for (let k = 1; k <= 5; k++) {
+        const rx = k * 5000;
+        const bx = rx + 160;
+        const bodyTool = surfaceY(g.x) + g.alt + 40;
+        if (!g.toolsGot["r" + k] && !nearRamp(rx, 300) && Math.abs(g.x - rx) < 70 && Math.abs(bodyTool - (surfaceY(rx) + 60)) < 100) {
+          g.toolsGot["r" + k] = true;
+          g.heat = 0;
+          g.stuntMsg = "🔧 Repaired! Engine cooled down";
+          g.stuntTimer = 120;
+        }
+        if (!g.toolsGot["b" + k] && !nearRamp(bx, 300) && Math.abs(g.x - bx) < 70 && Math.abs(bodyTool - (surfaceY(bx) + 60)) < 100) {
+          g.toolsGot["b" + k] = true;
+          g.boostLeft = 1000;
+          g.stuntMsg = "⚡ Boost! 100 m of extra speed";
+          g.stuntTimer = 120;
+        }
+      }
+      if (g.boostLeft > 0) {
+        g.boostLeft = Math.max(0, g.boostLeft - Math.abs(g.vx) * dt);
+        g.status = "⚡ Boost";
+        // exhaust flame from the silencer: orange with boost, blue with boost + nitro
+        const blue = inp.nitroHeld && g.nitro > 0;
+        if (Math.random() < 0.8) {
+          fx.current.push({
+            kind: blue ? "blueFire" : "boostFire",
+            x: g.x - 100,
+            y: surfaceY(g.x) + g.alt + 75 + (Math.random() - 0.5) * 6,
+            vx: -2 - Math.random() * 2,
+            vy: (Math.random() - 0.5) * 0.8,
+            life: 1,
+          });
+        }
+      }
+
+      // Boost + nitro for 70 m in a row: warning, then the truck blows up
+      if (g.phase === "none") {
+        if (g.boostLeft > 0 && inp.nitroHeld && inp.fwd && g.nitro > 0) g.blastDist += Math.abs(g.vx) * dt;
+        else g.blastDist = 0;
+        if (g.blastDist >= 700) {
+          g.phase = "warning";
+          g.phaseT = 0;
+          g.blastDist = 0;
+        }
+      } else if (g.phase === "warning") {
+        g.phaseT += dt / 60;
+        if (g.phaseT >= 1) {
+          g.phase = "blast";
+          g.phaseT = 0;
+          // the two tyres come off and fly away, the rest of the truck explodes
+          [WHEEL_X[0], WHEEL_X[1]].forEach((wx, i) => {
+            g.debris.push({
+              x: g.x + wx,
+              y: surfaceY(g.x + wx) + WHEEL_R,
+              vx: (i === 0 ? -4 : 4) + Math.random() * 2,
+              vy: 6 + Math.random() * 4,
+              rot: 0,
+              vr: (i === 0 ? -0.25 : 0.25),
+            });
+          });
+          for (let i = 0; i < 40; i++) {
+            fx.current.push({
+              kind: i % 3 === 0 ? "smoke" : "fire",
+              x: g.x + (Math.random() - 0.5) * 160,
+              y: surfaceY(g.x) + g.alt + 40 + Math.random() * 80,
+              vx: (Math.random() - 0.5) * 8,
+              vy: Math.random() * 6,
+              life: 1,
+            });
+          }
+        }
+      } else if (g.phase === "blast") {
+        g.phaseT += dt / 60;
+      }
+      g.debris.forEach((d) => {
+        d.vy -= GRAVITY * dt;
+        d.x += d.vx * dt;
+        d.y += d.vy * dt;
+        d.rot += d.vr * dt;
+        const ground = surfaceY(d.x) + WHEEL_R;
+        if (d.y < ground) {
+          d.y = ground;
+          d.vy = -d.vy * 0.4;
+          d.vx *= 0.85;
+          d.vr *= 0.8;
+          if (Math.abs(d.vy) < 1) d.vy = 0;
+        }
+      });
 
       // Engine heat: driving and stunts heat it up, water and idling cool it
       if (g.phase === "none") {
@@ -2095,7 +2459,7 @@ export default function MonsterTruckGame() {
           ...p,
           x: p.x + p.vx * dt,
           y: p.y + p.vy * dt,
-          life: p.life - (p.kind === "fire" ? 0.035 : 0.012) * dt,
+          life: p.life - (p.kind === "fire" || p.kind === "boostFire" || p.kind === "blueFire" ? 0.05 : 0.012) * dt,
         }))
         .filter((p) => p.life > 0);
 
@@ -2106,7 +2470,7 @@ export default function MonsterTruckGame() {
     const draw = () => {
       const g = game.current;
       const baseLine = H * 0.55;
-      const camX = g.x - W * 0.35;
+      const camX = g.x - W * (W < 700 ? 0.5 : 0.35);
       const sY = (wy) => baseLine - wy;
 
       const MP = mapRef.current;
@@ -2166,6 +2530,28 @@ export default function MonsterTruckGame() {
         for (let i = 0; i < 9; i++) {
           ctx.beginPath();
           ctx.ellipse(i * (W / 8) - 40, 40 + (i % 3) * 18, 120, 50, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (MP.decor === "stars") {
+        ctx.fillStyle = "rgba(255,255,255,0.8)";
+        for (let i = 0; i < 60; i++) {
+          ctx.beginPath();
+          ctx.arc((i * 137.5) % W, (i * 61.3) % (H * 0.5), 1 + (i % 2), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (MP.decor === "embers") {
+        const te = performance.now() / 1000;
+        for (let i = 0; i < 40; i++) {
+          ctx.fillStyle = "rgba(255,140,0,0.8)";
+          ctx.beginPath();
+          ctx.arc((i * 53.7) % W, H - ((i * 97.3 + te * 60) % H), 2 + (i % 3), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (MP.decor === "dunes") {
+        ctx.fillStyle = "rgba(230,180,110,0.5)";
+        for (let i = 0; i < 6; i++) {
+          ctx.beginPath();
+          ctx.ellipse(i * (W / 5) - 60, H * 0.5 + (i % 2) * 14, 180, 36, 0, 0, Math.PI * 2);
           ctx.fill();
         }
       } else if (MP.decor === "sea") {
@@ -2243,10 +2629,75 @@ export default function MonsterTruckGame() {
 
       feats.forEach((f) => {
         if (f.kind === "launch") {
-          for (let wx = f.cx; wx < f.cx + f.hw - 20; wx += 14) {
-            ctx.fillStyle = Math.floor((wx - f.cx) / 14) % 2 ? "#ffca28" : "#37474f";
-            ctx.fillRect(wx - camX, sY(groundY(wx)), 10, 6);
+          // Heavy dirt ramp silhouette with a black/yellow hazard-striped riding surface.
+          const x0 = f.cx - f.hw;
+          const x1 = f.cx + f.hw;
+          ctx.save();
+          ctx.beginPath();
+          for (let wx = x0; wx <= x1; wx += 5) {
+            const px = wx - camX;
+            const py = sY(groundY(wx));
+            if (wx === x0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
           }
+          ctx.lineTo(x1 - camX, sY(baseY(x1)) + 12);
+          for (let wx = x1; wx >= x0; wx -= 5) {
+            ctx.lineTo(wx - camX, sY(baseY(wx)) + 12);
+          }
+          ctx.closePath();
+          ctx.fillStyle = "#493126";
+          ctx.fill();
+          ctx.strokeStyle = "#21150f";
+          ctx.lineWidth = 4;
+          ctx.stroke();
+
+          // Top edge and alternating caution blocks follow the actual collision profile.
+          ctx.beginPath();
+          for (let wx = x0; wx <= x1; wx += 4) {
+            const px = wx - camX;
+            const py = sY(groundY(wx));
+            if (wx === x0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = "#171717";
+          ctx.lineWidth = 13;
+          ctx.lineJoin = "round";
+          ctx.stroke();
+
+          for (let wx = x0; wx < x1 - 2; wx += 22) {
+            const mid = wx + 10;
+            const y1 = sY(groundY(wx)) - 2;
+            const y2 = sY(groundY(Math.min(x1, wx + 18))) - 2;
+            ctx.strokeStyle = Math.floor((wx - x0) / 22) % 2 ? "#ffca28" : "#e6a900";
+            ctx.lineWidth = 7;
+            ctx.beginPath();
+            ctx.moveTo(wx - camX, y1);
+            ctx.lineTo(Math.min(x1, wx + 18) - camX, y2);
+            ctx.stroke();
+          }
+
+          // Structural supports for bridge/platform-style models.
+          if (["suspended", "bridge", "platform"].includes(f.rampType)) {
+            for (let wx = x0 + 45; wx < x1 - 20; wx += 95) {
+              const top = sY(groundY(wx)) + 5;
+              const bottom = sY(baseY(wx)) + 12;
+              ctx.strokeStyle = "#34383b";
+              ctx.lineWidth = 9;
+              ctx.beginPath();
+              ctx.moveTo(wx - camX, top);
+              ctx.lineTo(wx - camX, bottom);
+              ctx.stroke();
+              ctx.strokeStyle = "#9aa0a6";
+              ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.moveTo(wx - camX - 5, top + 8);
+              ctx.lineTo(wx - camX + 5, bottom - 5);
+              ctx.moveTo(wx - camX + 5, top + 8);
+              ctx.lineTo(wx - camX - 5, bottom - 5);
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
           return;
         }
         if (f.kind === "hill") {
@@ -2316,7 +2767,7 @@ export default function MonsterTruckGame() {
         });
       });
 
-      // Fuel stations every 300 m
+      // Fuel stations every 300 m: canopy over two pumps
       for (
         let k = Math.max(1, Math.floor((camX - 200) / FUEL_STATION_GAP));
         k <= Math.floor((camX + W + 200) / FUEL_STATION_GAP);
@@ -2326,40 +2777,56 @@ export default function MonsterTruckGame() {
         const used = g.collected[k];
         ctx.save();
         ctx.translate(wx - camX, sY(groundY(wx)));
-        ctx.globalAlpha = used ? 0.45 : 1;
-        // sign post
-        ctx.fillStyle = "#455a64";
-        ctx.fillRect(-64, -100, 6, 100);
-        ctx.fillRect(58, -100, 6, 100);
-        // sign board
-        ctx.fillStyle = "#e53935";
-        roundedRectPath(ctx, -78, -128, 156, 40, 10);
+        ctx.globalAlpha = used ? 0.5 : 1;
+        // shadow on the road
+        ctx.fillStyle = "rgba(0,0,0,0.25)";
+        ctx.fillRect(-112, -3, 224, 6);
+        // canopy posts
+        ctx.fillStyle = "#cfd8dc";
+        ctx.fillRect(-100, -122, 8, 122);
+        ctx.fillRect(92, -122, 8, 122);
+        // canopy with red brand band and FUEL sign
+        const roof = ctx.createLinearGradient(0, -150, 0, -120);
+        roof.addColorStop(0, "#ffffff");
+        roof.addColorStop(1, "#b0bec5");
+        ctx.fillStyle = roof;
+        roundedRectPath(ctx, -116, -150, 232, 30, 6);
         ctx.fill();
-        ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 18px Arial, sans-serif";
+        ctx.fillStyle = "#e53935";
+        ctx.fillRect(-116, -134, 232, 12);
+        ctx.fillStyle = "#e53935";
+        ctx.font = "bold 16px Arial, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText("⛽ FUEL", 0, -108);
-        // fuel barrels
-        ctx.fillStyle = "#fdd835";
-        roundedRectPath(ctx, -40, -44, 30, 44, 8);
-        ctx.fill();
-        ctx.fillStyle = "#b71c1c";
-        ctx.fillRect(-40, -30, 30, 6);
-        ctx.fillStyle = "#fdd835";
-        roundedRectPath(ctx, 14, -44, 30, 44, 8);
-        ctx.fill();
-        ctx.fillStyle = "#b71c1c";
-        ctx.fillRect(14, -30, 30, 6);
+        ctx.fillText("FUEL", 0, -141);
+        // two pumps
+        [-52, 52].forEach((px) => {
+          ctx.fillStyle = "#263238";
+          roundedRectPath(ctx, px - 16, -96, 32, 96, 8);
+          ctx.fill();
+          ctx.fillStyle = "#e53935";
+          roundedRectPath(ctx, px - 14, -92, 28, 18, 4);
+          ctx.fill();
+          ctx.fillStyle = "#00e676";
+          ctx.fillRect(px - 10, -66, 20, 14);
+          ctx.fillStyle = "#1b5e20";
+          ctx.fillRect(px - 8, -62, 16, 2);
+          ctx.fillRect(px - 8, -58, 10, 2);
+          ctx.strokeStyle = "#111";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(px + 16, -58);
+          ctx.quadraticCurveTo(px + 30, -30, px + 22, -10);
+          ctx.stroke();
+          ctx.fillStyle = "#ffb300";
+          ctx.fillRect(px + 18, -12, 9, 7);
+        });
         ctx.restore();
       }
 
       // Coins
-      for (let i = Math.max(0, Math.floor((camX - 200) / 380) - 1); i < COIN_COUNT && COIN_X(i) < camX + W + 100; i++) {
-        if (g.coinSet[i]) continue;
+      for (let i = Math.max(0, Math.floor((camX - 200) / 330) - 1); i < COIN_COUNT && COIN_X(i) < camX + W + 100; i++) {
+        if (g.coinSet[i] || nearRamp(COIN_X(i), 300)) continue;
         const cx = COIN_X(i);
         const cy = surfaceY(cx) + (i % 3 === 2 ? 150 : 50);
         const spin = Math.abs(Math.cos(performance.now() / 250 + i));
@@ -2377,47 +2844,199 @@ export default function MonsterTruckGame() {
         ctx.beginPath();
         ctx.arc(-4, -5, 3, 0, Math.PI * 2);
         ctx.fill();
+        ctx.fillStyle = "#8d6e00";
+        ctx.font = "bold 16px Arial, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("$", 0, 1);
         ctx.restore();
       }
 
-      // Checkpoint flags
-      CHECKPOINTS.forEach((cp) => {
-        if (cp < camX - 100 || cp > camX + W + 100) return;
+      // Repair and boost tools
+      for (let k = 1; k <= 5; k++) {
+        [[k * 5000, "r"], [k * 5000 + 160, "b"]].forEach(([tx, kind]) => {
+          const key = kind + k;
+          if (g.toolsGot[key] || nearRamp(tx, 300)) return;
+          if (tx < camX - 100 || tx > camX + W + 100) return;
+          const ty = surfaceY(tx) + 60;
+          const bob = Math.sin(performance.now() / 300 + k) * 3;
+          ctx.save();
+          ctx.translate(tx - camX, sY(ty) + bob);
+          ctx.beginPath();
+          ctx.arc(0, 0, 18, 0, Math.PI * 2);
+          ctx.fillStyle = kind === "r" ? "#43a047" : "#ff9800";
+          ctx.fill();
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          ctx.fillStyle = "#fff";
+          if (kind === "r") {
+            // wrench
+            ctx.fillRect(-9, -2.5, 18, 5);
+            ctx.beginPath();
+            ctx.arc(6, -6, 5, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            // lightning bolt
+            ctx.beginPath();
+            ctx.moveTo(3, -11);
+            ctx.lineTo(-6, 1);
+            ctx.lineTo(-1, 1);
+            ctx.lineTo(-4, 11);
+            ctx.lineTo(6, -2);
+            ctx.lineTo(1, -2);
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.restore();
+        });
+      }
+
+      // Tyres that came off in an explosion
+      g.debris.forEach((d) => {
+        ctx.save();
+        ctx.translate(d.x - camX, sY(d.y));
+        ctx.rotate(d.rot);
+        ctx.scale(SVG_S, SVG_S);
+        drawDesignWheel(ctx, 0, 0, 0, themeRef.current);
+        ctx.restore();
+      });
+
+      // Checkpoints: a bench with cheerleaders cheering
+      CHECKPOINTS.forEach((cp, ci) => {
+        if (cp < camX - 150 || cp > camX + W + 150) return;
         const px = cp - camX;
         const py = sY(surfaceY(cp));
-        ctx.fillStyle = "#455a64";
-        ctx.fillRect(px - 2, py - 110, 4, 110);
-        ctx.fillStyle = g.checkpoint >= cp ? "#43a047" : "#9e9e9e";
-        ctx.fillRect(px + 2, py - 110, 46, 26);
+        const reached = g.checkpoint >= cp;
+        const tt = performance.now() / 1000;
+        const cols = ["#e91e63", "#ffeb3b", "#4fc3f7", "#66bb6a"];
+        // standing cheerleaders on both sides
+        [-92, 92].forEach((ox, k) => {
+          const bob = Math.sin(tt * 6 + k + ci) * 4;
+          ctx.fillStyle = cols[(k + ci) % cols.length];
+          ctx.fillRect(px + ox - 7, py - 58, 14, 40);
+          ctx.fillStyle = "#f2c29b";
+          ctx.beginPath();
+          ctx.arc(px + ox, py - 66, 7, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = cols[(k + ci) % cols.length];
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.moveTo(px + ox - 6, py - 52);
+          ctx.lineTo(px + ox - 14, py - 84 + bob);
+          ctx.moveTo(px + ox + 6, py - 52);
+          ctx.lineTo(px + ox + 14, py - 84 - bob);
+          ctx.stroke();
+          ctx.fillStyle = "#ff80ab";
+          ctx.beginPath();
+          ctx.arc(px + ox - 14, py - 88 + bob, 5, 0, Math.PI * 2);
+          ctx.arc(px + ox + 14, py - 88 - bob, 5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        // seated fans on the bench, arms up
+        [-44, 0, 44].forEach((ox, k) => {
+          const c2 = cols[(k + ci + 1) % cols.length];
+          const bob = Math.sin(tt * 5 + k * 2 + ci) * 3;
+          ctx.fillStyle = c2;
+          ctx.fillRect(px + ox - 8, py - 36, 16, 18);
+          ctx.fillStyle = "#f2c29b";
+          ctx.beginPath();
+          ctx.arc(px + ox, py - 42, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = c2;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(px + ox - 7, py - 32);
+          ctx.lineTo(px + ox - 11, py - 56 + bob);
+          ctx.moveTo(px + ox + 7, py - 32);
+          ctx.lineTo(px + ox + 11, py - 56 - bob);
+          ctx.stroke();
+        });
+        // bench
+        ctx.fillStyle = "#8d6e63";
+        ctx.fillRect(px - 70, py - 20, 140, 8);
+        ctx.fillStyle = "#6d4c41";
+        ctx.fillRect(px - 66, py - 12, 6, 12);
+        ctx.fillRect(px + 60, py - 12, 6, 12);
+        ctx.fillRect(px - 70, py - 30, 140, 5);
+        // checkpoint sign
+        ctx.fillStyle = reached ? "#2e7d32" : "#37474f";
+        roundedRectPath(ctx, px - 46, py - 110, 92, 24, 6);
+        ctx.fill();
         ctx.fillStyle = "#fff";
         ctx.font = "bold 13px Arial, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(`${cp / 10} m`, px + 25, py - 97);
+        ctx.fillText(reached ? `✅ ${cp / 10} m` : `${cp / 10} m`, px, py - 98);
       });
 
-      // Finish line
-      if (COURSE_END > camX - 100 && COURSE_END < camX + W + 100) {
+      // Finish line: a clean race gantry with a LED board and checkered track band
+      if (COURSE_END > camX - 150 && COURSE_END < camX + W + 150) {
         const px = COURSE_END - camX;
         const py = sY(surfaceY(COURSE_END));
-        for (let r = 0; r < 10; r++) {
-          for (let c = 0; c < 2; c++) {
-            ctx.fillStyle = (r + c) % 2 ? "#fff" : "#111";
-            ctx.fillRect(px - 20 + c * 20, py - 140 + r * 14, 20, 14);
+        // checkered band across the track
+        for (let c = 0; c < 16; c++) {
+          for (let r = 0; r < 2; r++) {
+            ctx.fillStyle = (r + c) % 2 ? "#ffffff" : "#151515";
+            ctx.fillRect(px - 4 + c * 4, py - 4 - r * 4, 4, 4);
           }
         }
-        ctx.fillStyle = "#ffd600";
-        ctx.font = "bold 16px Arial, sans-serif";
+        // steel columns with highlights
+        const steel = ctx.createLinearGradient(px - 70, 0, px - 52, 0);
+        steel.addColorStop(0, "#90a4ae");
+        steel.addColorStop(0.5, "#eceff1");
+        steel.addColorStop(1, "#607d8b");
+        ctx.fillStyle = steel;
+        ctx.fillRect(px - 70, py - 160, 12, 160);
+        ctx.fillRect(px + 58, py - 160, 12, 160);
+        // truss beam on top
+        ctx.fillStyle = "#263238";
+        ctx.fillRect(px - 76, py - 174, 152, 18);
+        ctx.fillStyle = "#37474f";
+        ctx.fillRect(px - 76, py - 174, 152, 4);
+        // LED board
+        ctx.fillStyle = "#111";
+        roundedRectPath(ctx, px - 64, py - 150, 128, 46, 6);
+        ctx.fill();
+        ctx.strokeStyle = "#eceff1";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        const tl = performance.now() / 1000;
+        for (let i = 0; i < 16; i++) {
+          ctx.fillStyle = Math.sin(tl * 5 + i) > 0 ? "#ffd600" : "#5d4037";
+          ctx.fillRect(px - 64 + 4 + i * 8, py - 146, 4, 4);
+          ctx.fillRect(px - 64 + 4 + i * 8, py - 110, 4, 4);
+        }
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 22px Arial, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText("🏁 FINISH", px, py - 152);
+        ctx.fillText("FINISH", px, py - 127);
+        // tiny lights on the columns
+        ctx.fillStyle = "#00e5ff";
+        ctx.fillRect(px - 67, py - 96, 6, 6);
+        ctx.fillRect(px + 61, py - 96, 6, 6);
       }
 
       // Smoke and fire particles
       fx.current.forEach((p) => {
         const sx = p.x - camX;
         const sy = sY(p.y);
-        if (p.kind === "jet") {
+        if (p.kind === "boostFire") {
+          ctx.fillStyle = `rgba(255,${Math.round(120 + p.life * 100)},0,${(p.life * 0.9).toFixed(3)})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 5 + (1 - p.life) * 9, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (p.kind === "blueFire") {
+          ctx.fillStyle = `rgba(64,160,255,${(p.life * 0.9).toFixed(3)})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 5 + (1 - p.life) * 9, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = `rgba(220,240,255,${p.life.toFixed(3)})`;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 2 + p.life * 2, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (p.kind === "jet") {
           ctx.fillStyle = `rgba(120,210,255,${(p.life * 0.8).toFixed(3)})`;
           ctx.beginPath();
           ctx.arc(sx, sy, 4 + (1 - p.life) * 10, 0, Math.PI * 2);
@@ -2448,22 +3067,26 @@ export default function MonsterTruckGame() {
 
       // Truck: follows the road slope, plus air rotation (FLIP) and nose-up (WHEELIE)
       const slope = (surfaceY(g.x + 6) - surfaceY(g.x - 6)) / 12;
-      const airPitch = g.grounded ? 0 : clamp(-g.vy * 0.02, -0.2, 0.2);
+      const airPitch = g.grounded ? 0 : clamp(-g.vy * 0.012, -0.15, 0.15);
       const tilt = -Math.atan(slope) + airPitch + g.flip + g.lean;
       ctx.save();
-      ctx.translate(g.x - camX, sY(surfaceY(g.x) + g.alt + (g.flipLift || 0)));
+      const TRUCK_K = W < 700 ? 0.8 : 1; // smaller truck on mobile screens
+      const flipping = g.phase === "flipping" || g.phase === "flipped";
+      const liftNow = flipping ? flipLiftFor(g, tilt, TRUCK_K) : 0;
+      ctx.translate(g.x - camX, sY(surfaceY(g.x) + g.alt) - liftNow);
       ctx.rotate(tilt);
+      ctx.scale(TRUCK_K, TRUCK_K);
       ctx.translate(WHEEL_X[0], 0);
       ctx.rotate(-g.wheelie); // pivot on the rear wheel
       ctx.translate(-WHEEL_X[0], 0);
-      drawTruckDesign(ctx, g, themeRef.current);
+      if (g.phase !== "blast") drawTruckDesign(ctx, g, themeRef.current);
       ctx.restore();
     };
 
     const loop = (now) => {
       const dt = Math.min((now - last) / (1000 / 60), 2);
       last = now;
-      if (screenRef.current === "playing") update(dt);
+      if (screenRef.current === "playing" && game.current.phase !== "lostLife") update(dt);
       updateEngine(audioRef, game.current.vx, volumeRef.current, screenRef.current === "playing");
       draw();
 
@@ -2531,6 +3154,39 @@ export default function MonsterTruckGame() {
     setScreen("trucks");
   };
 
+  const startRound = (mi, rn) => {
+    setMapIdx(mi);
+    setRound(rn);
+    worldSeed = rn * 13 + mi * 101; // each round has its own road
+    courseRound = rn; // more and harder ramps in later rounds
+    game.current = initialState();
+    dust.current = [];
+    fx.current = [];
+    lastHud.current = { d: -1, h: -1, s: "", n: 0, heat: -1, fuel: -1, nitro: -1, coins: -1, lives: -1, phase: "none" };
+    setDistance(0);
+    setHeight(0);
+    setStatus("");
+    setStunts(0);
+    setHeat(0);
+    setFuel(100);
+    setOverPhase("none");
+    setTopSide("restart");
+    setScreen("playing");
+    ensureAudio(audioRef);
+  };
+
+  const toRoundSelect = () => {
+    game.current = initialState();
+    setOverPhase("none");
+    setScreen("rounds");
+  };
+
+  const continueRun = () => {
+    respawnTruck(game.current);
+    lastHud.current = { d: -1, h: -1, s: "", n: 0, heat: -1, fuel: -1, nitro: -1, coins: -1, lives: -1, phase: "none" };
+    setOverPhase("none");
+  };
+
   const restart = () => {
     game.current = initialState();
     dust.current = [];
@@ -2562,10 +3218,16 @@ export default function MonsterTruckGame() {
     border: "4px solid transparent",
     backgroundClip: "padding-box",
     borderRadius: 24,
-    padding: "26px 28px",
-    minWidth: 280,
-    maxWidth: "90vw",
+    padding: compact ? "14px 14px" : "26px 28px",
+    width: panelW,
+    minHeight: panelH,
+    boxSizing: "border-box",
+    maxWidth: "92vw",
     textAlign: "center",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
     color: "#3e2723",
     boxShadow: "0 0 0 4px #ff9800, 0 0 40px rgba(255,152,0,0.6), 0 12px 40px rgba(0,0,0,0.5)",
     animation: "mtPop 0.6s cubic-bezier(0.2, 1.3, 0.4, 1) both",
@@ -2573,8 +3235,8 @@ export default function MonsterTruckGame() {
   };
   const bigBtnStyle = {
     marginTop: 14,
-    padding: "12px 28px",
-    fontSize: 18,
+    padding: compact ? "9px 18px" : "12px 28px",
+    fontSize: compact ? 14 : 18,
     fontWeight: 800,
     borderRadius: 12,
     border: "none",
@@ -2587,6 +3249,9 @@ export default function MonsterTruckGame() {
   };
 
   // Hold-to-use buttons (move, wheelie, flip)
+  const hint = (t) =>
+    !compact && <span style={{ fontSize: 9, fontWeight: 600, marginTop: 2, opacity: 0.9 }}>{t}</span>;
+
   const holdProps = (key) => ({
     onPointerDown: (e) => {
       e.preventDefault();
@@ -2613,8 +3278,8 @@ export default function MonsterTruckGame() {
   };
 
   const ctrlStyle = {
-    width: 64,
-    height: 64,
+    width: Math.round(64 * cs),
+    height: Math.round(64 * cs),
     borderRadius: 32,
     border: "2px solid rgba(255,255,255,0.75)",
     background: "rgba(60,40,20,0.45)",
@@ -2657,12 +3322,6 @@ export default function MonsterTruckGame() {
             <h1 className="mt-title" style={{ margin: "4px 0 8px", fontSize: 28, fontWeight: 900 }}>
               MONSTER TRUCK
             </h1>
-            <p style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 700, color: "#5d4037" }}>
-              Welcome to the game! 🎉
-            </p>
-            <p style={{ margin: "0 0 4px", fontSize: 15, color: "#6d4c41" }}>
-              Are you excited to start? Mountains, rocks, water, mud, bridges and ramps are waiting for you!
-            </p>
             <button onClick={() => setScreen("guide")} className="mt-btn" style={bigBtnStyle}>
               ▶ PLAY
             </button>
@@ -2672,59 +3331,104 @@ export default function MonsterTruckGame() {
 
       {screen === "maps" && (
         <div style={overlayStyle}>
-          <div style={{ ...panelStyle, minWidth: 320, maxWidth: 480 }}>
-            <div style={{ fontSize: 38, animation: "mtBounce 1.4s ease-in-out infinite" }}>🗺️</div>
-            <h2 className="mt-title" style={{ margin: "2px 0 12px", fontSize: 26, fontWeight: 900 }}>
+          <div style={panelStyle}>
+            <div style={{ fontSize: 34 }}>🗺️</div>
+            <h2 className="mt-title" style={{ margin: "2px 0 12px", fontSize: compact ? 20 : 26, fontWeight: 900 }}>
               CHOOSE MAP
             </h2>
-            <div
-              style={{
-                height: 150,
-                borderRadius: 16,
-                overflow: "hidden",
-                position: "relative",
-                border: "3px solid #fff",
-                boxShadow: "0 6px 18px rgba(0,0,0,0.3)",
-                background: `linear-gradient(180deg, ${MAPS[mapIdx].skyTop}, ${MAPS[mapIdx].skyBot} 55%, ${MAPS[mapIdx].gTop} 56%, ${MAPS[mapIdx].gBot})`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                onClick={() => setMapIdx(Math.max(0, mapIdx - 1))}
+                disabled={mapIdx === 0}
+                style={arrowBtnStyle(mapIdx === 0)}
+              >
+                ◀
+              </button>
               <div
                 key={mapIdx}
                 style={{
-                  fontSize: 26,
-                  fontWeight: 900,
-                  color: "#fff",
-                  textShadow: "0 2px 6px rgba(0,0,0,0.5)",
-                  animation: "mtPop 0.5s ease both",
+                  width: compact ? 160 : 230,
+                  height: compact ? 170 : 200,
+                  borderRadius: 16,
+                  border: "3px solid #fff",
+                  boxShadow: "0 6px 18px rgba(0,0,0,0.3)",
+                  background: `linear-gradient(180deg, ${MAPS[mapIdx].skyTop}, ${MAPS[mapIdx].skyBot} 55%, ${MAPS[mapIdx].gTop} 56%, ${MAPS[mapIdx].gBot})`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  animation: "mtPop 0.45s ease both",
                 }}
               >
-                {MAPS[mapIdx].name}
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, fontFamily: "system-ui, sans-serif" }}>
+                  <div style={{ fontSize: compact ? 40 : 52, lineHeight: 1 }}>{MAPS[mapIdx].name.split(" ").slice(-1)[0]}</div>
+                  <div style={{ fontSize: compact ? 16 : 20, fontWeight: 300, color: "#fff", letterSpacing: 0.5, textShadow: "0 2px 6px rgba(0,0,0,0.5)" }}>
+                    {MAPS[mapIdx].name.split(" ").slice(0, -1).join(" ")}
+                  </div>
+                </div>
               </div>
+              <button
+                onClick={() => setMapIdx(Math.min(MAPS.length - 1, mapIdx + 1))}
+                disabled={mapIdx === MAPS.length - 1}
+                style={arrowBtnStyle(mapIdx === MAPS.length - 1)}
+              >
+                ▶
+              </button>
             </div>
-            <input
-              className="mt-slider"
-              type="range"
-              min="0"
-              max={MAPS.length - 1}
-              step="1"
-              value={mapIdx}
-              onChange={(e) => setMapIdx(Number(e.target.value))}
-              style={{ width: "100%", marginTop: 12 }}
-            />
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, marginTop: 4 }}>
+            <div style={{ display: "flex", justifyContent: "center", gap: 6, marginTop: 10 }}>
               {MAPS.map((m, i) => (
-                <span key={m.name} style={{ color: i === mapIdx ? "#e65100" : "#8d6e63" }}>
-                  {m.name.split(" ")[0]}
-                </span>
+                <span key={m.name} style={{ width: 9, height: 9, borderRadius: 5, background: i === mapIdx ? "#e65100" : "#bcaaa4" }} />
               ))}
             </div>
-            <p style={{ margin: "10px 0 4px", fontWeight: 700, color: "#5d4037" }}>{MAPS[mapIdx].desc}</p>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>Grip: {Math.round(MAPS[mapIdx].grip * 100)}%</div>
-            <button onClick={startGame} className="mt-btn" style={{ ...bigBtnStyle, marginTop: 14 }}>
-              ▶ START
+            <button onClick={() => setScreen("rounds")} className="mt-btn" style={{ ...bigBtnStyle, marginTop: 14 }}>
+              NEXT ▶
+            </button>
+          </div>
+        </div>
+      )}
+
+      {screen === "rounds" && (
+        <div style={overlayStyle}>
+          <div style={panelStyle}>
+            <div style={{ fontSize: 34 }}>🏁</div>
+            <h2 className="mt-title" style={{ margin: "2px 0 8px", fontSize: compact ? 18 : 24, fontWeight: 900 }}>
+              {MAPS[mapIdx].name}
+            </h2>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginTop: 6 }}>
+              {Array.from({ length: ROUNDS }, (_, i) => i + 1).map((r) => {
+                const open = r <= unlocked[mapIdx];
+                const won = wins[`${mapIdx}-${r}`];
+                return (
+                  <button
+                    key={r}
+                    disabled={!open}
+                    onClick={() => startRound(mapIdx, r)}
+                    className={open ? "mt-btn" : undefined}
+                    title={open ? `Round ${r}` : "Locked"}
+                    style={{
+                      width: "100%",
+                      aspectRatio: "1 / 1",
+                      borderRadius: 16,
+                      padding: 0,
+                      border: "2px solid #fff",
+                      fontWeight: 900,
+                      fontSize: 16,
+                      color: "#fff",
+                      background: won
+                        ? "linear-gradient(135deg, #43a047, #1b5e20)"
+                        : open
+                        ? "linear-gradient(135deg, #ffb300, #e65100)"
+                        : "#757575",
+                      opacity: open ? 1 : 0.6,
+                      cursor: open ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    {open ? (won ? `✓ ${r}` : r) : "🔒"}
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={() => setScreen("maps")} className="mt-btn" style={{ ...bigBtnStyle, marginTop: 12, background: "#6d4c41" }}>
+              ◀ BACK TO MAPS
             </button>
           </div>
         </div>
@@ -2732,51 +3436,61 @@ export default function MonsterTruckGame() {
 
       {screen === "trucks" && (
         <div style={overlayStyle}>
-          <div style={{ ...panelStyle, minWidth: 320, maxWidth: 480 }}>
-            <div style={{ fontSize: 38, animation: "mtBounce 1.4s ease-in-out infinite" }}>🚚</div>
-            <h2 className="mt-title" style={{ margin: "2px 0 12px", fontSize: 26, fontWeight: 900 }}>
+          <div style={panelStyle}>
+            <h2 className="mt-title" style={{ margin: "2px 0 12px", fontSize: compact ? 18 : 24, fontWeight: 900 }}>
               CHOOSE TRUCK
             </h2>
-            <div
-              style={{
-                height: 150,
-                borderRadius: 16,
-                border: "3px solid #fff",
-                boxShadow: "0 6px 18px rgba(0,0,0,0.3)",
-                background: `linear-gradient(135deg, ${THEMES[colorIdx].secondary}, ${THEMES[colorIdx].primary} 55%, ${THEMES[colorIdx].dark})`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
+            <div style={{ position: "relative", width: Math.round(panelW * 0.7), height: compact ? 150 : 170 }}>
               <div
                 key={colorIdx}
                 style={{
-                  fontSize: 26,
-                  fontWeight: 900,
-                  color: THEMES[colorIdx].accent,
-                  textShadow: "0 2px 6px rgba(0,0,0,0.5)",
-                  animation: "mtPop 0.5s ease both",
+                  width: "100%",
+                  height: "100%",
+                  boxSizing: "border-box",
+                  borderRadius: 16,
+                  border: "3px solid #fff",
+                  boxShadow: "0 6px 18px rgba(0,0,0,0.3)",
+                  background: `linear-gradient(135deg, ${THEMES[colorIdx].secondary}, ${THEMES[colorIdx].primary} 55%, ${THEMES[colorIdx].dark})`,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 4,
+                  animation: "mtPop 0.45s ease both",
+                  overflow: "hidden",
                 }}
               >
-                {THEMES[colorIdx].name}
+                <TruckPreview design={THEMES[colorIdx]} width={compact ? 190 : 220} height={compact ? 84 : 96} />
+                <div
+                  style={{
+                    fontSize: compact ? 11 : 13,
+                    fontWeight: 600,
+                    color: THEMES[colorIdx].accent,
+                    textShadow: "0 1px 4px rgba(0,0,0,0.5)",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  {THEMES[colorIdx].name}
+                </div>
               </div>
+              <button
+                onClick={() => setColorIdx(Math.max(0, colorIdx - 1))}
+                disabled={colorIdx === 0}
+                style={{ ...arrowBtnStyle(colorIdx === 0), position: "absolute", left: -22, top: "50%", transform: "translateY(-50%)" }}
+              >
+                ◀
+              </button>
+              <button
+                onClick={() => setColorIdx(Math.min(THEMES.length - 1, colorIdx + 1))}
+                disabled={colorIdx === THEMES.length - 1}
+                style={{ ...arrowBtnStyle(colorIdx === THEMES.length - 1), position: "absolute", right: -22, top: "50%", transform: "translateY(-50%)" }}
+              >
+                ▶
+              </button>
             </div>
-            <input
-              className="mt-slider"
-              type="range"
-              min="0"
-              max={THEMES.length - 1}
-              step="1"
-              value={colorIdx}
-              onChange={(e) => setColorIdx(Number(e.target.value))}
-              style={{ width: "100%", marginTop: 12 }}
-            />
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, marginTop: 4 }}>
+            <div style={{ display: "flex", justifyContent: "center", gap: 6, marginTop: 12 }}>
               {THEMES.map((t, i) => (
-                <span key={t.name} style={{ color: i === colorIdx ? "#e65100" : "#8d6e63" }}>
-                  {t.name.split(" ")[0]}
-                </span>
+                <span key={t.name} style={{ width: 9, height: 9, borderRadius: 5, background: i === colorIdx ? "#e65100" : "#bcaaa4" }} />
               ))}
             </div>
             <button onClick={() => setScreen("maps")} className="mt-btn" style={{ ...bigBtnStyle, marginTop: 14 }}>
@@ -2788,42 +3502,49 @@ export default function MonsterTruckGame() {
 
       {screen === "guide" && (
         <div style={overlayStyle}>
-          <div style={{ ...panelStyle, minWidth: 320, maxWidth: 480, padding: "22px 20px", maxHeight: "90vh", overflowY: "auto" }}>
+          <div style={{ ...panelStyle, padding: "22px 20px", maxHeight: "90vh", overflowY: "auto" }}>
             <div style={{ fontSize: 40, animation: "mtBounce 1.4s ease-in-out infinite" }}>🎮</div>
             <h2 className="mt-title" style={{ margin: "2px 0 12px", fontSize: 26, fontWeight: 900 }}>
               CONTROL GUIDE
             </h2>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, textAlign: "left" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
               {GUIDE.map((row, i) => (
                 <div
                   key={row.name}
                   style={{
                     display: "flex",
+                    flexDirection: "column",
                     alignItems: "center",
-                    gap: 10,
+                    gap: 4,
                     background: "rgba(255,255,255,0.65)",
-                    borderRadius: 12,
-                    padding: "8px 10px",
-                    animation: `mtPop 0.5s ease ${i * 0.07}s both`,
+                    borderRadius: 10,
+                    padding: "6px 4px",
+                    animation: `mtPop 0.5s ease ${i * 0.05}s both`,
                   }}
                 >
                   <div
                     style={{
-                      minWidth: 84,
+                      width: "100%",
                       textAlign: "center",
                       background: "linear-gradient(135deg, #ffb300, #e65100)",
                       color: "#fff",
-                      borderRadius: 10,
-                      padding: "6px 4px",
-                      fontWeight: 900,
-                      fontSize: 13,
+                      borderRadius: 8,
+                      padding: "3px 2px",
+                      fontWeight: 800,
+                      fontSize: compact ? 18 : 10,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
                     }}
                   >
-                    {row.key}
+                    {compact ? GUIDE_ICONS[row.name] || row.key : row.key}
                   </div>
-                  <div style={{ fontSize: 14, lineHeight: 1.35 }}>
-                    <b>{row.name}</b> — {row.desc}
+                  {!compact && (
+                  <div style={{ fontSize: 11, lineHeight: 1.2, fontWeight: 300, textAlign: "center" }}>
+                    <b style={{ fontWeight: 600 }}>{row.name}</b>
+                    {!compact && row.keys && <div style={{ fontSize: 9, opacity: 0.85, marginTop: 2 }}>⌨ {row.keys}</div>}
                   </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -2841,13 +3562,13 @@ export default function MonsterTruckGame() {
           top: 12,
           left: 12,
           color: "#fff",
-          fontSize: 18,
+          fontSize: compact ? 13 : 18,
           fontWeight: 700,
           textShadow: "0 2px 4px rgba(0,0,0,0.6)",
           pointerEvents: "none",
         }}
       >
-        🏁 {distance}/2000 m &nbsp; 🔥 {stunts} &nbsp; ❤️ {lives} &nbsp; 🪙 {coins}/{COIN_COUNT}
+        Round {round} &nbsp; 🏁 {distance}/3000 m &nbsp; {stunts > 0 && <>⭐ {stunts} &nbsp; </>}❤️ {lives} &nbsp; ${coins}/{COIN_COUNT}
         {status && <div style={{ fontSize: 15, marginTop: 4 }}>{status}</div>}
       </div>
 
@@ -2876,7 +3597,7 @@ export default function MonsterTruckGame() {
           </span>
           <div
             style={{
-              width: 170,
+              width: compact ? 110 : 170,
               height: 16,
               borderRadius: 8,
               background: "rgba(0,0,0,0.4)",
@@ -2940,7 +3661,7 @@ export default function MonsterTruckGame() {
           <span style={{ fontSize: 20 }}>🚀</span>
           <div
             style={{
-              width: 170,
+              width: compact ? 110 : 170,
               height: 16,
               borderRadius: 8,
               background: "rgba(0,0,0,0.4)",
@@ -2980,7 +3701,7 @@ export default function MonsterTruckGame() {
           <span style={{ fontSize: 20 }}>⛽</span>
           <div
             style={{
-              width: 170,
+              width: compact ? 110 : 170,
               height: 16,
               borderRadius: 8,
               background: "rgba(0,0,0,0.4)",
@@ -3020,31 +3741,89 @@ export default function MonsterTruckGame() {
         />
       )}
 
+      {/* Warning before the blast: the whole screen flashes red for 1 second */}
+      {overPhase === "warning" && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(255,0,0,0.9)",
+            zIndex: 25,
+            animation: "mtFadeOut 1s ease-in forwards",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+
+      {/* Life lost popup: shows the remaining hearts, then CONTINUE from the checkpoint */}
+      {overPhase === "lostLife" && (
+        <div style={{ ...overlayStyle, background: "rgba(0,0,0,0.8)", zIndex: 30 }}>
+          <div style={panelStyle}>
+            <div style={{ fontSize: compact ? 15 : 18, fontWeight: 900, color: "#c62828" }}>LIFE LOST</div>
+            <div style={{ display: "flex", gap: compact ? 6 : 10, justifyContent: "center", margin: "10px 0", fontSize: compact ? 30 : 42 }}>
+              {Array.from({ length: LIVES_START }, (_, i) => (
+                <span
+                  key={i}
+                  style={{
+                    display: "inline-block",
+                    animation: i < lives ? "mtBounce 1.2s ease-in-out infinite" : "none",
+                    filter: i < lives ? "none" : "grayscale(1) opacity(0.45)",
+                  }}
+                >
+                  ❤️
+                </span>
+              ))}
+            </div>
+            <p style={{ margin: "0 0 6px", fontWeight: 800, color: "#5d4037" }}>
+              {lives} li{lives === 1 ? "fe" : "ves"} left. Continue from the {(game.current.checkpoint / 10) | 0} m checkpoint.
+            </p>
+            <button onClick={continueRun} className="mt-btn" style={bigBtnStyle}>
+              ▶ CONTINUE
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Try Again popup */}
-      {(overPhase === "over" || overPhase === "nofuel" || overPhase === "flipped" || overPhase === "finished") && (
+      {(overPhase === "over" || overPhase === "nofuel" || (overPhase === "flipped" && lives === 0) || (overPhase === "blast" && lives === 0) || overPhase === "finished") && (
         <div style={{ ...overlayStyle, background: "#000", zIndex: 30 }}>
           <div style={panelStyle}>
             <div style={{ fontSize: 56, animation: "mtBounce 1.2s ease-in-out infinite" }}>💥</div>
             <h2 className="mt-title" style={{ margin: "4px 0 6px", fontSize: 30, fontWeight: 900 }}>
-              {overPhase === "finished" ? (coins >= COIN_PASS ? "🏁 FINISH!" : "NOT ENOUGH COINS!") : overPhase === "nofuel" ? "OUT OF FUEL!" : overPhase === "flipped" ? "TRUCK FLIPPED!" : "ENGINE BLEW UP!"}
+              {overPhase === "finished" ? (coins >= COIN_PASS ? `ROUND ${round} COMPLETE!` : "NOT ENOUGH COINS!") : overPhase === "blast" ? "TRUCK BLEW UP!" : overPhase === "nofuel" ? "OUT OF FUEL!" : overPhase === "flipped" ? "TRUCK FLIPPED!" : "ENGINE BLEW UP!"}
             </h2>
             <p style={{ margin: "0 0 6px", fontWeight: 700, color: "#5d4037" }}>
-              {overPhase === "nofuel"
-                ? "Fuel khatam ho gaya! Agle fuel station tak nahi pahunch paye."
+              {overPhase === "blast"
+                ? "Boost and nitro were used together for too long. Use nitro in short bursts!"
+                : overPhase === "nofuel"
+                ? "You ran out of fuel before the next fuel station."
                 : overPhase === "flipped"
-                ? "Wheelie bahut der tak dabaye rakhi, truck ulta ho gaya. Halka wheelie karo!"
+                ? "The wheelie was held too long and the truck flipped. Keep wheelies short!"
                 : overPhase === "finished"
                 ? coins >= COIN_PASS
-                  ? `2000 m complete! ${coins}/${COIN_COUNT} coins collect kiye.`
-                  : `Sirf ${coins}/${COIN_COUNT} coins! ${COIN_PASS} coins zaroori hain. Dobara koshish karo!`
-                : "Truck bahut garam ho gaya tha. Dobara koshish karo!"}
+                  ? `3000 m complete! You collected ${coins}/${COIN_COUNT} coins.`
+                  : `Only ${coins}/${COIN_COUNT} coins! You need ${COIN_PASS}. Try again!`
+                : "The truck overheated. Try again!"}
             </p>
             <p style={{ margin: "0 0 4px", fontWeight: 800 }}>
-              🏁 {distance} m &nbsp; 🔥 {stunts} stunts &nbsp; 🏆 Best: {best} m
+              🏁 {distance} m &nbsp; ⭐ {stunts} stunts &nbsp; 🏆 Best: {best} m
             </p>
-            <button onClick={restart} className="mt-btn" style={bigBtnStyle}>
-              ↻ TRY AGAIN
-            </button>
+            {overPhase === "finished" && coins >= COIN_PASS ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+                {round < ROUNDS && (
+                  <button onClick={() => startRound(mapIdx, round + 1)} className="mt-btn" style={bigBtnStyle}>
+                    ▶ NEXT ROUND
+                  </button>
+                )}
+                <button onClick={toRoundSelect} className="mt-btn" style={{ ...bigBtnStyle, marginTop: 0, background: "#6d4c41" }}>
+                  🏁 ROUND SELECT
+                </button>
+              </div>
+            ) : (
+              <button onClick={restart} className="mt-btn" style={bigBtnStyle}>
+                ↻ TRY AGAIN
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -3055,9 +3834,10 @@ export default function MonsterTruckGame() {
           <button
             onClick={() => setScreen(screen === "playing" ? "paused" : "playing")}
             title={screen === "playing" ? "Pause" : "Play"}
-            style={iconRoundStyle}
+            style={{ ...iconRoundStyle, width: Math.round(48 * cs), height: Math.round(48 * cs), flexDirection: "column", gap: 1 }}
           >
             {screen === "playing" ? <PauseGlyph /> : <PlayGlyph />}
+            {hint("P")}
           </button>
           <div
             style={{
@@ -3098,9 +3878,11 @@ export default function MonsterTruckGame() {
       <div style={{ position: "absolute", left: 14, bottom: 18, display: "flex", gap: 12 }}>
         <button {...holdProps("back")} style={ctrlStyle}>
           ◀
+          {hint("← / A")}
         </button>
         <button {...holdProps("fwd")} style={ctrlStyle}>
           ▶
+          {hint("→ / D")}
         </button>
       </div>
 
@@ -3108,28 +3890,32 @@ export default function MonsterTruckGame() {
       <div style={{ position: "absolute", right: 14, bottom: 18, display: "flex", gap: 12, alignItems: "flex-end" }}>
         <button
           {...holdProps("nitroHeld")}
-          style={{ ...ctrlStyle, width: 58, height: 58, fontSize: 14, background: "linear-gradient(135deg, #40c4ff, #1565c0)" }}
+          style={{ ...ctrlStyle, width: Math.round(58 * cs), height: Math.round(58 * cs), fontSize: 14, background: "linear-gradient(135deg, #40c4ff, #1565c0)" }}
         >
-          🚀<span style={{ fontSize: 9, marginTop: 2 }}>NITRO</span>
+          🚀
+          {hint("N")}
         </button>
-        <button {...holdProps("wheelieHeld")} style={{ ...ctrlStyle, width: 58, height: 58, fontSize: 14 }}>
-          🌀<span style={{ fontSize: 9, marginTop: 2 }}>WHEELIE</span>
+        <button {...holdProps("wheelieHeld")} style={{ ...ctrlStyle, width: Math.round(58 * cs), height: Math.round(58 * cs), fontSize: 14 }}>
+          🌀
+          {hint("G")}
         </button>
-        <button {...holdProps("flipHeld")} style={{ ...ctrlStyle, width: 58, height: 58, fontSize: 14 }}>
-          🔄<span style={{ fontSize: 9, marginTop: 2 }}>FLIP</span>
+        <button {...holdProps("flipHeld")} style={{ ...ctrlStyle, width: Math.round(58 * cs), height: Math.round(58 * cs), fontSize: 14 }}>
+          🔄
+          {hint("F")}
         </button>
         <button
           {...jumpProps}
           style={{
             ...ctrlStyle,
-            width: 76,
-            height: 76,
+            width: Math.round(76 * cs),
+            height: Math.round(76 * cs),
             borderRadius: 38,
             background: "linear-gradient(135deg, #ff7043, #d84315)",
             fontSize: 15,
           }}
         >
-          JUMP
+          ⬆
+          {hint("Space")}
         </button>
       </div>
 
